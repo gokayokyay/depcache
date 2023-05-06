@@ -1,0 +1,25 @@
+[package]
+name = "depcache"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.28.0", features = ["full"] }
+# rust-s3 = { version = "0.33.0", default-features = false, features = ["tokio-rustls-tls"] }
+rust-s3 = { version = "0.33.0" }
+anyhow = "1.0.71"
+platform-info = "1.0.2"
+md5 = "0.7.0"
+os_info = { version = "3", default-features = false }
+toml = "0.7.3"
+walkdir = "2.3.3"
+tokio-tar = "0.3.0"
+indicatif = "0.17.3"
+futures = "0.3"
+
+[profile.release]
+opt-level = 0
+overflow-checks = false
+lto = false
