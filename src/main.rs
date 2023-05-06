@@ -59,7 +59,16 @@ async fn main() -> Result<()> {
         get_cache(bucket.clone(), s3_path.clone()).await.unwrap();
         exit(0);
     }
-    let release_tar_file_name = tar_release().await.unwrap();
+
+    let release_tar_file_name = match tar_release().await {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("Failed to tar release folder. It probably doesn't exist. Not panicking, just exiting. Cya!");
+            println!("Hint: can you run \"cargo build --release\"?");
+            eprintln!("{e}");
+            exit(0);
+        }
+    };
     let tar_data = fs::read(release_tar_file_name).await.unwrap();
     let multi_init_resp = bucket
         .initiate_multipart_upload(&s3_path, "application/octet-stream")
