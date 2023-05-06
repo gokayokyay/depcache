@@ -1,5 +1,5 @@
 use futures::{future::BoxFuture, FutureExt};
-use s3::{Bucket, serde_types::Part};
+use s3::{serde_types::Part, Bucket};
 
 fn _upload_to_bucket_retry(
     retry_attempt: u32,
@@ -15,21 +15,34 @@ fn _upload_to_bucket_retry(
         panic!();
     }
     async move {
-        match bucket.put_multipart_chunk(
-            chunk.clone(),
-            path.as_str(),
-            part_number,
-            upload_id.as_str(),
-            "application/octet-stream"
-        ).await {
+        match bucket
+            .put_multipart_chunk(
+                chunk.clone(),
+                path.as_str(),
+                part_number,
+                upload_id.as_str(),
+                "application/octet-stream",
+            )
+            .await
+        {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error while uploading chunk to bucket. Retrying.");
                 eprintln!("{e}");
-                return _upload_to_bucket_retry(retry_attempt + 1, retry_limit, bucket, chunk, path, part_number, upload_id).await;
-            },
+                return _upload_to_bucket_retry(
+                    retry_attempt + 1,
+                    retry_limit,
+                    bucket,
+                    chunk,
+                    path,
+                    part_number,
+                    upload_id,
+                )
+                .await;
+            }
         }
-    }.boxed()
+    }
+    .boxed()
 }
 
 pub async fn upload_to_bucket_retry(
@@ -40,7 +53,8 @@ pub async fn upload_to_bucket_retry(
     part_number: u32,
     upload_id: String,
 ) -> Part {
-    return _upload_to_bucket_retry(0, retry_limit, bucket, chunk, path, part_number, upload_id).await;
+    return _upload_to_bucket_retry(0, retry_limit, bucket, chunk, path, part_number, upload_id)
+        .await;
 }
 
 fn _complete_multipart_upload(
@@ -49,7 +63,7 @@ fn _complete_multipart_upload(
     bucket: Bucket,
     path: String,
     upload_id: String,
-    parts: Vec<Part>
+    parts: Vec<Part>,
 ) -> BoxFuture<'static, ()> {
     if retry_attempt == retry_limit {
         eprintln!("Retry limit reached while completing chunk upload process. Panicking.");
@@ -57,16 +71,28 @@ fn _complete_multipart_upload(
     }
 
     async move {
-        match bucket.complete_multipart_upload(&path, &upload_id, parts.clone()).await {
+        match bucket
+            .complete_multipart_upload(&path, &upload_id, parts.clone())
+            .await
+        {
             Ok(_) => (),
             Err(e) => {
                 eprintln!("Error while finishing multi chunk upload.");
                 eprintln!("{e}");
                 eprintln!("Trying again.");
-                return _complete_multipart_upload(retry_attempt + 1, retry_limit, bucket, path, upload_id, parts).await;
-            },
+                return _complete_multipart_upload(
+                    retry_attempt + 1,
+                    retry_limit,
+                    bucket,
+                    path,
+                    upload_id,
+                    parts,
+                )
+                .await;
+            }
         };
-    }.boxed()
+    }
+    .boxed()
 }
 
 pub async fn complete_multipart_upload(
@@ -74,7 +100,7 @@ pub async fn complete_multipart_upload(
     bucket: Bucket,
     path: String,
     upload_id: String,
-    parts: Vec<Part>
+    parts: Vec<Part>,
 ) {
     _complete_multipart_upload(0, retry_limit, bucket, path, upload_id, parts).await;
 }

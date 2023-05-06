@@ -1,21 +1,27 @@
-mod s3config;
-mod platform;
+mod cache;
 mod crate_utils;
+mod platform;
+mod s3config;
 mod upload_utils;
+
+use std::process::exit;
 
 use anyhow::Result;
 use s3::creds::Credentials;
 use s3::Bucket;
 use tokio::fs;
 
+use crate::cache::{check_cache, get_cache};
 use crate::crate_utils::tar_release;
 use crate::platform::get_platform_hash;
-use crate::upload_utils::{upload_to_bucket_retry, complete_multipart_upload};
+use crate::upload_utils::{complete_multipart_upload, upload_to_bucket_retry};
 
 static CHUNK_SIZE: usize = 100_000_000;
+static ARCHIVE_NAME: &str = "release.tar.gz";
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    println!("Please make sure your Cargo files and release directory are up to date!");
     let platform_hash = get_platform_hash()?;
     let config = match s3config::S3Config::init_from_env() {
         Ok(c) => c,
@@ -26,11 +32,10 @@ async fn main() -> Result<()> {
     };
     let pkg_name = crate_utils::get_crate_info()?.name;
     let pkg_hash = crate_utils::get_crate_hash()?;
-    
-    let release_tar_file_name = tar_release().await.unwrap();
-    let s3_path = format!("{pkg_name}/{platform_hash}/{pkg_hash}/{release_tar_file_name}");
+
+    let s3_path = format!("{pkg_name}/{platform_hash}/{pkg_hash}/{ARCHIVE_NAME}");
     println!("{s3_path}");
-    // This requires a running minio server at localhost:9000
+
     let bucket = Bucket::new(
         &config.bucket_name,
         s3::region::Region::Custom {
@@ -48,8 +53,17 @@ async fn main() -> Result<()> {
     )?
     .with_path_style();
 
+    let cache_exists = check_cache(bucket.clone(), s3_path.clone()).await;
+    if cache_exists {
+        println!("Cache found!");
+        get_cache(bucket.clone(), s3_path.clone()).await.unwrap();
+        exit(0);
+    }
+    let release_tar_file_name = tar_release().await.unwrap();
     let tar_data = fs::read(release_tar_file_name).await.unwrap();
-    let multi_init_resp = bucket.initiate_multipart_upload(&s3_path, "application/octet-stream").await?;
+    let multi_init_resp = bucket
+        .initiate_multipart_upload(&s3_path, "application/octet-stream")
+        .await?;
     let chunks = tar_data.chunks(CHUNK_SIZE).into_iter();
 
     println!("Uploading the file");
@@ -58,10 +72,25 @@ async fn main() -> Result<()> {
 
     for (idx, chunk) in chunks.enumerate() {
         println!("Uploading the chunk no {idx}");
-        let part = upload_to_bucket_retry(10, bucket.clone(),  chunk.to_vec(), s3_path.clone(), idx as u32 + 1, multi_init_resp.upload_id.clone()).await;
+        let part = upload_to_bucket_retry(
+            10,
+            bucket.clone(),
+            chunk.to_vec(),
+            s3_path.clone(),
+            idx as u32 + 1,
+            multi_init_resp.upload_id.clone(),
+        )
+        .await;
         parts.push(part);
     }
-    complete_multipart_upload(10, bucket.clone(), s3_path.clone(), multi_init_resp.upload_id.clone(), parts).await;
+    complete_multipart_upload(
+        10,
+        bucket.clone(),
+        s3_path.clone(),
+        multi_init_resp.upload_id.clone(),
+        parts,
+    )
+    .await;
 
     let (head_object_result, code) = bucket.head_object(s3_path.clone()).await?;
     assert_eq!(code, 200);
