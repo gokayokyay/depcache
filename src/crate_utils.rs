@@ -79,7 +79,11 @@ pub async fn tar_release() -> Result<String> {
     bar.set_style(ProgressStyle::with_template("Compressing file: {msg}\n{bar}").unwrap());
     for entry in iter {
         let f_name = entry.file_name().to_string_lossy();
-
+        if entry.file_type().is_dir() {
+            if entry.path().read_dir()?.next().is_none() {
+                continue;
+            }
+        }
         bar.set_message(format!("{f_name} - {}", entry.path().to_str().unwrap()));
         bar.inc(1);
         if !f_name.contains(&crate_info.name) {
