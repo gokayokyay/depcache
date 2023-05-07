@@ -3,6 +3,7 @@ mod crate_utils;
 mod platform;
 mod s3config;
 mod upload_utils;
+mod compression;
 
 use std::process::exit;
 
@@ -12,6 +13,7 @@ use s3::Bucket;
 use tokio::fs;
 
 use crate::cache::{check_cache, get_cache};
+use crate::compression::check_tar;
 use crate::crate_utils::tar_release;
 use crate::platform::get_platform_hash;
 use crate::upload_utils::{complete_multipart_upload, upload_to_bucket_retry};
@@ -21,6 +23,8 @@ static ARCHIVE_NAME: &str = "release.tar.gz";
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    println!("Please make sure tar is installed and available in your PATH");
+    check_tar().await;
     println!("Please make sure your Cargo files and release directory are up to date!");
     let platform_hash = get_platform_hash()?;
     let config = match s3config::S3Config::init_from_env() {
@@ -107,7 +111,7 @@ async fn main() -> Result<()> {
         head_object_result.content_type.unwrap_or_default(),
         "application/octet-stream".to_owned()
     );
-
+    tokio::fs::remove_file(ARCHIVE_NAME).await?;
     println!("{}", head_object_result.content_length.unwrap());
 
     Ok(())

@@ -1,12 +1,9 @@
 use std::process::Command;
 
 use anyhow::{anyhow, Result};
-use indicatif::{ProgressBar, ProgressStyle};
-use tokio::fs::{metadata, File};
-use tokio_tar::Builder;
-use walkdir::WalkDir;
+use tokio::fs::{metadata};
 
-use crate::ARCHIVE_NAME;
+use crate::{ARCHIVE_NAME, compression::compress_dir};
 
 #[derive(Debug, Clone)]
 pub struct CrateInfo {
@@ -62,36 +59,9 @@ pub async fn tar_release() -> Result<String> {
             return Err(anyhow!("Release dir doesn't exist."));
         }
     };
-    let tar_gz = File::create(ARCHIVE_NAME).await?;
-    let mut a = Builder::new(tar_gz);
-
-    let crate_info = get_crate_info()?;
-    let iter = WalkDir::new("./target/release")
-        .follow_links(true)
-        .into_iter()
-        .filter_map(|e| e.ok());
-    // TODO: Find a better way
-    let iter_for_count = WalkDir::new("./target/release")
-        .follow_links(true)
-        .into_iter()
-        .filter_map(|e| e.ok());
-    let bar = ProgressBar::new(iter_for_count.count().try_into().unwrap());
-    bar.set_style(ProgressStyle::with_template("Compressing file: {msg}\n{bar}").unwrap());
-    for entry in iter {
-        let f_name = entry.file_name().to_string_lossy();
-        if entry.file_type().is_dir() {
-            if entry.path().read_dir()?.next().is_none() {
-                continue;
-            }
-        }
-        bar.set_message(format!("{f_name} - {}", entry.path().to_str().unwrap()));
-        bar.inc(1);
-        if !f_name.contains(&crate_info.name) {
-            a.append_path(entry.path()).await.unwrap();
-        }
-    }
-    bar.finish();
-    a.finish().await.unwrap();
+    swap_crate_dep_files().await?;
+    compress_dir("./target/release".to_string(), ARCHIVE_NAME.to_string()).await;
+    restore_crate_dep_files().await?;
     Ok(ARCHIVE_NAME.to_string())
 }
 
@@ -140,4 +110,25 @@ pub fn get_rust_version() -> String {
     }
     let version = get_version_and_date().unwrap();
     return version.0.unwrap();
+}
+
+pub async fn swap_crate_dep_files() -> Result<()> {
+    let crate_info: CrateInfo = get_crate_info()?;
+    tokio::fs::create_dir_all("./tmpdeps").await?;
+    let mut deps_dir = tokio::fs::read_dir("./target/release/deps").await?;
+    while let Ok(Some(entry)) = deps_dir.next_entry().await {
+        if entry.file_name().to_string_lossy().starts_with(&crate_info.name) {
+            tokio::fs::rename(entry.path(), format!("./tmpdeps/{}", entry.file_name().to_string_lossy())).await?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn restore_crate_dep_files() -> Result<()> {
+    let mut deps_dir = tokio::fs::read_dir("./tmpdeps").await?;
+    while let Ok(Some(entry)) = deps_dir.next_entry().await {
+        tokio::fs::rename(entry.path(), format!("./target/release/deps/{}", entry.file_name().to_string_lossy())).await?;
+    }
+    tokio::fs::remove_dir("./tmpdeps").await?;
+    Ok(())
 }
