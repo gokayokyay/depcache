@@ -1,31 +1,63 @@
 mod cache;
+mod compression;
 mod crate_utils;
 mod platform;
 mod s3config;
 mod upload_utils;
-mod compression;
 
 use std::process::exit;
 
 use anyhow::Result;
+use clap::Parser;
 use s3::creds::Credentials;
 use s3::Bucket;
 use tokio::fs;
 
 use crate::cache::{check_cache, get_cache};
-use crate::compression::check_tar;
-use crate::crate_utils::tar_release;
+use crate::compression::{check_tar, archive_name};
+use crate::crate_utils::{check_targets, tar_release};
 use crate::platform::get_platform_hash;
 use crate::upload_utils::{complete_multipart_upload, upload_to_bucket_retry};
 
 static CHUNK_SIZE: usize = 100_000_000;
-static ARCHIVE_NAME: &str = "release.tar.gz";
+// static ARCHIVE_NAME: &str = "release.tar.gz";
+
+#[derive(Default, Parser, Debug)]
+struct Arguments {
+    #[clap(short, long)]
+    target: Option<String>,
+    #[clap(short, long)]
+    profile: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Arguments::parse();
+    let target = args.target;
+    let profile = args.profile.unwrap_or("release".to_string());
+    let profile = {
+        if profile == "dev" {
+            "debug".to_string()
+        } else {
+            profile
+        }
+    };
+    let current_target = {
+        if let Some(target) = target {
+            format!("{target}/{profile}")
+        } else {
+            format!("{profile}")
+        }
+    };
+    if check_targets().await.contains(&current_target) {
+        println!("Current target found!");
+    } else {
+        println!("Current target ({current_target}) not found!");
+    }
+
     println!("Please make sure tar is installed and available in your PATH");
     check_tar().await;
-    println!("Please make sure your Cargo files and release directory are up to date!");
+    println!("Please make sure your Cargo files and target directories are up to date!");
     let platform_hash = get_platform_hash()?;
     let config = match s3config::S3Config::init_from_env() {
         Ok(c) => c,
@@ -37,7 +69,9 @@ async fn main() -> Result<()> {
     let pkg_name = crate_utils::get_crate_info()?.name;
     let pkg_hash = crate_utils::get_crate_hash()?;
 
-    let s3_path = format!("{pkg_name}/{platform_hash}/{pkg_hash}/{ARCHIVE_NAME}");
+    let archive_name = archive_name(current_target.clone());
+
+    let s3_path = format!("{pkg_name}/{platform_hash}/{pkg_hash}/{archive_name}");
     println!("{s3_path}");
 
     let bucket = Bucket::new(
@@ -64,7 +98,7 @@ async fn main() -> Result<()> {
         exit(0);
     }
 
-    let release_tar_file_name = match tar_release().await {
+    let release_tar_file_name = match tar_release(current_target.clone(), archive_name.clone()).await {
         Ok(n) => n,
         Err(e) => {
             eprintln!("Failed to tar release folder. It probably doesn't exist. Not panicking, just exiting. Cya!");
@@ -111,7 +145,7 @@ async fn main() -> Result<()> {
         head_object_result.content_type.unwrap_or_default(),
         "application/octet-stream".to_owned()
     );
-    tokio::fs::remove_file(ARCHIVE_NAME).await?;
+    tokio::fs::remove_file(archive_name).await?;
     println!("{}", head_object_result.content_length.unwrap());
 
     Ok(())

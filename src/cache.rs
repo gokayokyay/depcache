@@ -1,7 +1,7 @@
 use anyhow::Result;
 use futures::StreamExt;
 use s3::Bucket;
-use tokio::{fs::{remove_file}, io::AsyncWriteExt};
+use tokio::{fs::remove_file, io::AsyncWriteExt};
 
 use crate::compression::decompress_archive;
 

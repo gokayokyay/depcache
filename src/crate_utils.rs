@@ -1,9 +1,9 @@
-use std::process::Command;
+use std::{process::Command};
 
 use anyhow::{anyhow, Result};
-use tokio::fs::{metadata};
+use tokio::fs::metadata;
 
-use crate::{ARCHIVE_NAME, compression::compress_dir};
+use crate::{compression::compress_dir};
 
 #[derive(Debug, Clone)]
 pub struct CrateInfo {
@@ -49,20 +49,36 @@ pub fn get_crate_hash() -> Result<String> {
     return Ok(format!("{:x}", hash));
 }
 
-pub async fn tar_release() -> Result<String> {
-    match metadata("./target/release").await {
+pub async fn tar_release(target: String, archive_name: String) -> Result<String> {
+    match metadata(format!("./target/{target}")).await {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("Failed to read target/release directory.");
+            eprintln!("Failed to read {target} directory.");
             eprintln!("Probably your package doesn't have a release dir. Please run a release command first.");
             eprintln!("{e}");
             return Err(anyhow!("Release dir doesn't exist."));
         }
     };
-    swap_crate_dep_files().await?;
-    compress_dir("./target/release".to_string(), ARCHIVE_NAME.to_string()).await;
-    restore_crate_dep_files().await?;
-    Ok(ARCHIVE_NAME.to_string())
+    let mut target_dirs = vec![];
+    target_dirs.push(format!("./target/{target}"));
+
+    for target_dir in target_dirs.clone() {
+        swap_crate_dep_files(target_dir.clone()).await?;
+    }
+
+    if target.contains("/") {
+        let mut splitted: Vec<_> = target.split("/").collect();
+        let profile = splitted.pop().unwrap().to_string();
+        target_dirs.push(format!("./target/{profile}"));
+    }
+
+    compress_dir(target_dirs.clone(), archive_name.to_string()).await;
+    for target_dir in target_dirs {
+        restore_crate_dep_files(target_dir).await?;
+    }
+    tokio::fs::remove_dir("./tmpdeps").await?;
+
+    Ok(archive_name.to_string())
 }
 
 // Using https://github.com/SergioBenitez/version_check/blob/master/src/lib.rs
@@ -112,23 +128,85 @@ pub fn get_rust_version() -> String {
     return version.0.unwrap();
 }
 
-pub async fn swap_crate_dep_files() -> Result<()> {
+pub async fn swap_crate_dep_files(target_dir: String) -> Result<()> {
     let crate_info: CrateInfo = get_crate_info()?;
     tokio::fs::create_dir_all("./tmpdeps").await?;
-    let mut deps_dir = tokio::fs::read_dir("./target/release/deps").await?;
+    let mut deps_dir = tokio::fs::read_dir(format!("{target_dir}/deps")).await?;
     while let Ok(Some(entry)) = deps_dir.next_entry().await {
-        if entry.file_name().to_string_lossy().starts_with(&crate_info.name) {
-            tokio::fs::rename(entry.path(), format!("./tmpdeps/{}", entry.file_name().to_string_lossy())).await?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&crate_info.name)
+        {
+            tokio::fs::rename(
+                entry.path(),
+                format!("./tmpdeps/{}", entry.file_name().to_string_lossy()),
+            )
+            .await?;
         }
     }
     Ok(())
 }
 
-pub async fn restore_crate_dep_files() -> Result<()> {
+pub async fn restore_crate_dep_files(target_dir: String) -> Result<()> {
     let mut deps_dir = tokio::fs::read_dir("./tmpdeps").await?;
     while let Ok(Some(entry)) = deps_dir.next_entry().await {
-        tokio::fs::rename(entry.path(), format!("./target/release/deps/{}", entry.file_name().to_string_lossy())).await?;
+        tokio::fs::rename(
+            entry.path(),
+            format!(
+                "{target_dir}/deps/{}",
+                entry.file_name().to_string_lossy()
+            ),
+        )
+        .await?;
     }
-    tokio::fs::remove_dir("./tmpdeps").await?;
     Ok(())
+}
+
+pub async fn check_targets() -> Vec<String> {
+    let mut target_dir = match tokio::fs::read_dir("./target").await {
+        Ok(k) => k,
+        Err(_) => return vec![],
+    };
+    let known_profiles = vec!["debug", "release"];
+    let mut targets = vec![];
+    while let Ok(Some(entry)) = target_dir.next_entry().await {
+        if entry.file_type().await.unwrap().is_dir() {
+            if known_profiles.contains(&entry.file_name().to_str().unwrap()) {
+                let filename = entry.file_name();
+                targets.push(format!("{}", filename.to_string_lossy().to_string()));
+            } else {
+                let target_platform_dir_name = entry.file_name().clone();
+                let target_platform_dir_name = target_platform_dir_name.to_string_lossy();
+                let target_platfor_dir_path = format!("./target/{}", target_platform_dir_name);
+                let mut target_platform_dir = tokio::fs::read_dir(target_platfor_dir_path.clone())
+                .await
+                .unwrap();
+                while let Ok(Some(entry)) = target_platform_dir.next_entry().await {
+                    if entry.file_type().await.unwrap().is_dir() {
+                        if known_profiles.contains(&entry.file_name().to_str().unwrap()) {
+                            let filename = entry.file_name();
+                            targets.push(format!("{}/{}", target_platform_dir_name.clone(), filename.to_string_lossy().to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut intercepted_targets = vec![];
+
+    for target in targets {
+        if target.contains("/debug") {
+            let mut splitted: Vec<_> = target.split("/").collect();
+            splitted.pop();
+            splitted.push("dev");
+            intercepted_targets.push(splitted.join("/"));
+        } else if target.eq("debug") {
+            intercepted_targets.push("dev".to_string());
+        }
+        intercepted_targets.push(target);
+    }
+
+    return intercepted_targets;
 }

@@ -16,6 +16,7 @@ md5 = "0.7.0"
 os_info = { version = "3", default-features = false }
 toml = "0.7.3"
 futures = "0.3"
+clap = { version = "4.2.7", features = ["derive"] }
 
 [profile.release]
 opt-level = 0
