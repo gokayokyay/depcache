@@ -42,6 +42,10 @@ pub fn get_crate_info() -> Result<CrateInfo> {
 pub fn get_crate_hash() -> Result<String> {
     let crate_info = get_crate_info()?;
     let rust_version = get_rust_version();
+    println!("rustc: {rust_version}");
+    println!("cargo: {}", crate_info.cargo_file);
+    println!("lock: {}", crate_info.lock_file);
+
     let hash = md5::compute(format!(
         "{}||{}||{}",
         rust_version, crate_info.cargo_file, crate_info.lock_file
